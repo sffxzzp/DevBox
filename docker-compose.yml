@@ -1,0 +1,52 @@
+# =============================================================================
+# claude-remote: Claude Code + HAPI + Tailscale
+#
+# 使用前先准备配置：
+#   cp .env.example .env   然后编辑 .env（API 端点、API Key、Tailscale auth key 等）
+#
+# 启动：
+#   docker compose up -d --build
+#   docker compose logs -f     # 查看 HAPI 的 URL / 二维码 / token
+# =============================================================================
+services:
+  claude-remote:
+    build: .
+    image: claude-remote:latest
+    container_name: claude-remote
+    hostname: ${TS_HOSTNAME:-claude-vps}          # 与 tailnet 中的主机名保持一致
+    restart: unless-stopped
+    env_file: .env                                # 注入 ANTHROPIC_* / TS_* / HAPI_* 等变量
+    environment:
+      WORKSPACE_ROOT: /workspace                  # runner 允许浏览/新建会话的目录
+    volumes:
+      - ./workspace:/workspace                    # 代码工作区（宿主机目录，持久化）
+      - claude-config:/home/claude/.claude        # Claude Code 认证 & 配置
+      - hapi-config:/home/claude/.hapi            # HAPI hub 数据库 & token
+      - codex-config:/home/claude/.codex          # Codex 配置 & 登录缓存
+      - grok-config:/home/claude/.grok            # Grok 配置 & 登录缓存
+      - pi-config:/home/claude/.pi                # Pi 配置（models.json）
+      - opencode-config:/home/claude/.config/opencode  # OpenCode 配置（opencode.json）
+      - tailscale-state:/var/lib/tailscale        # Tailscale 状态（重启不重新认证）
+      # 可选：持久化按需安装的 agent 二进制（~/.local），重启容器不用重新下载
+      # - agent-bin:/home/claude/.local
+    # 可选：在 VPS 本机回环上暴露 HAPI Web UI（http://localhost:3006）
+    # 注意：仅当你需要在 VPS 本地浏览器直接访问时再打开；远程请走 relay/Tailscale
+    # ports:
+    #   - "127.0.0.1:3006:3006"
+    stdin_open: true
+    tty: true
+    healthcheck:
+      test: ["CMD", "bash", "-c", "(echo > /dev/tcp/127.0.0.1/3006) 2>/dev/null || exit 1"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 20s
+
+volumes:
+  claude-config:
+  hapi-config:
+  codex-config:
+  grok-config:
+  pi-config:
+  opencode-config:
+  tailscale-state:

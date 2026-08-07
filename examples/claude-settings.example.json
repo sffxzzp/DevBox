@@ -1,0 +1,7 @@
+{
+  "env": {
+    "ANTHROPIC_BASE_URL": "https://your-llm-gateway.example.com",
+    "ANTHROPIC_API_KEY": "sk-your-key-here",
+    "DISABLE_AUTOUPDATER": "1"
+  }
+}
