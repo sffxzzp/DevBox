@@ -1,8 +1,9 @@
 #!/usr/bin/env bash
 # =============================================================================
-# claude-remote 容器入口脚本
+# devbox 容器入口脚本
 #
-#  0. 按需安装 agent（AGENT 变量控制：claude/codex/opencode/grok/cursor/kimi/copilot/agy/pi，
+#  0. 运行时目录与权限（root 引导：mkdir+chown bind mount 后降权到 devbox/uid 1000 运行）
+#  0.5 按需安装 agent（AGENT 变量控制：claude/codex/opencode/grok/cursor/kimi/copilot/agy/pi，
 #     NPM_REGISTRY 可配镜像）
 #  1. （可选）TS_AUTHKEY 存在时启动 Tailscale（userspace 模式，无需特权）
 #  1.5-1.8 按 CODEX_* / GROK_* / PI_* / OPENCODE_* 环境变量生成各 agent 的自定义端点配置
@@ -14,17 +15,49 @@
 set -euo pipefail
 
 HAPI_PORT="${HAPI_LISTEN_PORT:-3006}"
-LOG_DIR="${HAPI_HOME:-$HOME/.hapi}/logs"
-mkdir -p "$LOG_DIR"
 
 log() { echo "[entrypoint] $*"; }
+
+# ---------------------------------------------------------------------------
+# 0) 运行时目录与权限 —— root 引导：自动授权 bind mount 后降权到 devbox (uid 1000)
+#    bind mount（./data → /home/devbox、./tailscale → /var/lib/tailscale、./workspace）
+#    由 Docker 首次自动创建时属主是 root，容器内 uid 1000 无法写入也无法 chown。
+#    因此默认以 root 启动本脚本：统一 mkdir + chown 这三个目录归 devbox，再用 setpriv
+#    降权为 devbox 重新执行脚本，此后所有进程都以 uid 1000 运行（等效 --user 1000）。
+#    宿主侧无需任何手动 chown。若被强制以非 root 启动（docker run --user 1000 /
+#    compose user:），则跳过授权，由下面的 FATAL 给出提示。
+# ---------------------------------------------------------------------------
+if [ "$(id -u)" = "0" ]; then
+  log "以 root 引导：自动授权 /home/devbox、/var/lib/tailscale、/workspace、/var/run/tailscale，然后降权到 devbox (uid 1000)..."
+  mkdir -p /home/devbox /var/lib/tailscale /workspace
+  # 仅当目录属主不是 devbox(uid 1000) 时才 chown（首次创建或宿主预置了 root 内容时触发一次；
+  # 之后每次重启跳过，避免反复改写宿主目录内文件的属主）
+  if [ "$(stat -c %u /home/devbox)" != "1000" ] \
+     || [ "$(stat -c %u /var/lib/tailscale)" != "1000" ] \
+     || [ "$(stat -c %u /workspace)" != "1000" ]; then
+    chown -R devbox:devbox /home/devbox /var/lib/tailscale /workspace 2>/dev/null || true
+  fi
+  # tailscale CLI 默认连接 /var/run/tailscale/tailscaled.sock：引导时创建并授权给 devbox
+  mkdir -p /var/run/tailscale
+  chown devbox:devbox /var/run/tailscale 2>/dev/null || true
+  export HOME=/home/devbox
+  exec setpriv --reuid=1000 --regid=1000 --init-groups /usr/local/bin/entrypoint.sh "$@"
+fi
+LOG_DIR="${HAPI_HOME:-$HOME/.hapi}/logs"
+if ! mkdir -p "$HOME/.claude" "$HOME/.hapi/logs" "$HOME/.codex" "$HOME/.grok" \
+         "$HOME/.pi/agent" "$HOME/.config/opencode" "$LOG_DIR"; then
+  log "FATAL: 无法创建 $HOME 下的配置目录 —— ./data 不可写。"
+  log "       容器以非 root 启动时无法自动授权；请用默认用户启动（去掉 --user / user: 配置），"
+  log "       或在宿主机执行：sudo chown -R 1000:1000 data tailscale"
+  exit 1
+fi
 
 HUB_PID=""
 TAIL_PID=""
 TS_CONNECTED=0        # tailscale up 是否真的成功
 
 # ---------------------------------------------------------------------------
-# 0) 按需安装 agent —— 镜像里不预装，启动时按需安装以缩小体积
+# 0.5) 按需安装 agent —— 镜像里不预装，启动时按需安装以缩小体积
 #    AGENT          : 逗号分隔，如 claude / codex / opencode / grok / cursor / kimi / copilot / agy / pi / none
 #    NPM_REGISTRY   : npm 镜像地址，国内用户可设 https://registry.npmmirror.com
 #    CLAUDE_VERSION / CODEX_VERSION / OPENCODE_VERSION / COPILOT_VERSION / PI_VERSION : 版本锁定（默认 latest）
@@ -91,10 +124,14 @@ done
 TS_AUTHKEY="$(echo "${TS_AUTHKEY:-}" | xargs)"   # 去空格，避免 .env 里尾随空格导致失败
 if [ -n "$TS_AUTHKEY" ]; then
   log "Starting tailscaled (userspace networking, no privileged caps required)..."
+  # 使用默认 socket 路径 /var/run/tailscale/tailscaled.sock（root 引导时已创建并授权给
+  # devbox），这样 tailscale CLI 无需 --socket 即可连接；state 存 ./tailscale bind 里持久化
+  mkdir -p /var/lib/tailscale 2>/dev/null \
+    || log "WARNING: cannot write /var/lib/tailscale — check ./tailscale 挂载权限。"
+  rm -f /var/run/tailscale/tailscaled.sock
   tailscaled \
     --tun=userspace-networking \
     --state=/var/lib/tailscale/tailscaled.state \
-    --socket=/var/run/tailscale/tailscaled.sock \
     >/tmp/tailscaled.log 2>&1 &
 
   # 等待 unix socket 就绪
@@ -103,7 +140,7 @@ if [ -n "$TS_AUTHKEY" ]; then
     sleep 1
   done
 
-  TS_UP=(up --authkey="$TS_AUTHKEY" --hostname="${TS_HOSTNAME:-claude-vps}")
+  TS_UP=(up --authkey="$TS_AUTHKEY" --hostname="${TS_HOSTNAME:-devbox-vps}")
   if [ "${TS_SSH:-true}" = "true" ]; then
     TS_UP+=(--ssh)          # 启用 Tailscale SSH，可从任意设备 ssh 进容器
   fi
@@ -150,7 +187,7 @@ CODEX_MODEL="${CODEX_MODEL:-gpt-5.1}"
 gen_codex() {
   # 用 printf 写配置，避免 heredoc 对含 $、反引号等特殊字符的值做 shell 展开
   printf '%s\n' \
-    '# 由 claude-remote entrypoint 根据环境变量自动生成' \
+    '# 由 devbox entrypoint 根据环境变量自动生成' \
     'model_provider = "custom"' \
     "model = \"$CODEX_MODEL\"" \
     '' \
@@ -165,7 +202,7 @@ gen_codex() {
 gen_config "Codex" "$CODEX_HOME/config.toml" "${CODEX_BASE_URL:-}" "${CODEX_API_KEY:-}" gen_codex CODEX_BASE_URL CODEX_API_KEY
 # 未走网关时，若设置了 OPENAI_API_KEY 则提示一次性登录方式
 if [ -z "${CODEX_BASE_URL:-}${CODEX_API_KEY:-}" ] && [ -n "${OPENAI_API_KEY:-}" ]; then
-  log "Codex: OPENAI_API_KEY 已设置。首次使用请执行：docker exec -it <container> bash -c 'printenv OPENAI_API_KEY | codex login --with-api-key'"
+  log "  Codex: OPENAI_API_KEY 已设置。首次使用请执行：docker exec -it -u devbox <container> bash -c 'printenv OPENAI_API_KEY | codex login --with-api-key'"
 fi
 
 # 1.6) Grok —— 生成 ~/.grok/config.toml（env_key 方式）
@@ -311,13 +348,17 @@ trap cleanup TERM INT
 
 log "Container ready."
 log "  - agent（AGENT=$AGENTS）：在 hapi Web UI 新建会话时选择用哪个 CLI。"
-log "    CLI 方式：docker exec -it <container> bash -c 'cd /workspace && hapi'（claude）或 'hapi codex'（codex）"
+log "    CLI 方式：docker exec -it -u devbox <container> bash -c 'cd /workspace && hapi'（claude）或 'hapi codex'（codex）"
+# hapi 仅在公共中继模式（--relay）打印 token；直连模式（--no-relay）下从这里读取并输出
+HAPI_TOKEN="$(sed -n 's/.*"cliApiToken"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p' "${HAPI_HOME:-$HOME/.hapi}/settings.json" 2>/dev/null | head -1 || true)"
 if [ "$HAPI_NO_RELAY" = "true" ] && [ "$TS_CONNECTED" = "1" ]; then
   log "  - 访问入口（Tailscale）：手机装 Tailscale App 登录同一 tailnet，浏览器打开 http://<tailnet-IP>:3006"
-  log "    tailnet IP：docker exec <container> tailscale ip -4"
-  log "    token：docker exec <container> cat /home/claude/.hapi/settings.json （cliApiToken）"
+  log "    tailnet IP：docker exec -u devbox <container> tailscale ip -4"
+  [ -n "$HAPI_TOKEN" ] && log "    token（cliApiToken）：$HAPI_TOKEN"
+  log "    （token 也可用：docker exec -u devbox <container> cat /home/devbox/.hapi/settings.json）"
 else
   log "  - 访问入口（公共中继）：docker logs -f <container>（首行即 URL + 二维码），或访问 https://app.hapi.run 用 token 登录"
+  [ -n "$HAPI_TOKEN" ] && log "    token（cliApiToken）：$HAPI_TOKEN"
 fi
 log "  - hub 日志：$LOG_DIR/hub.log（已流式输出到 stdout）"
 log "  - runner 日志：$LOG_DIR/runner.log"
