@@ -125,8 +125,9 @@ cd /workspace && hapi
 cd /workspace && hapi codex
 ```
 
-After changing `AGENT`, rebuild with `docker compose up -d --build`.
+After changing `AGENT`, recreate the container so the updated `.env` is applied (no image rebuild needed):
 
+    docker compose up -d --force-recreate
 ---
 
 ## Data persistence
