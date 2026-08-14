@@ -71,11 +71,11 @@ docker compose logs | grep 'Tailscale connected'
 docker exec -u devbox devbox tailscale ip -4
 ```
 
-**Option B: Public relay** (auto when `TS_AUTHKEY` is empty)
+**Option B: Public relay** (default when `TS_AUTHKEY` is empty; can be forced with `HAPI_NO_RELAY=false`)
 
-```bash
-docker compose logs -f
-```
+> Note: If you set `HAPI_NO_RELAY=true`, you must have a working Tailscale connection, otherwise the hub will only listen on `127.0.0.1` and you won’t be able to access it remotely.
+
+    docker compose logs -f
 
 Or open <https://app.hapi.run> and log in with the token from logs.
 
