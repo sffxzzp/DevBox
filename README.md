@@ -1,3 +1,170 @@
+# devbox: Remote AI coding assistants on your VPS (mobile/browser)
+
+> English is the default. 中文请见下方「中文版」。
+
+A Docker image that lets you run **9 AI coding assistants** on your VPS (**Claude Code, Codex, OpenCode, Grok, Cursor, Kimi, Copilot, Antigravity, Pi**) and operate them remotely from your **phone or browser** without opening public ports.
+
+- 📱 **Mobile/browser ready**: hapi Web UI (PWA-capable), remote chat, tool-approval, remote session creation
+- 🔒 **Tailscale direct access (recommended)**: end-to-end encrypted private tunnel
+- 🧩 **Install agents on demand**: no preinstalled CLIs, smaller image size
+- 💾 **Persistent data**: auth, config, and code are stored on host volumes
+
+---
+
+## Quick Start
+
+### 1) Prepare config
+
+```bash
+cp .env.example .env
+```
+
+Edit `.env` and configure at least one agent key, for example Claude Code:
+
+```env
+ANTHROPIC_BASE_URL=https://your-api-gateway
+ANTHROPIC_API_KEY=sk-xxx
+```
+
+Recommended (direct phone-to-VPS access via Tailscale):
+
+```env
+TS_AUTHKEY=tskey-auth-xxxx
+TS_HOSTNAME=devbox-vps
+```
+
+If needed in mainland China, also set:
+
+```env
+NPM_REGISTRY=https://registry.npmmirror.com
+```
+
+### 2) Start
+
+```bash
+docker compose up -d --build
+```
+
+First boot automatically installs selected agent CLIs (`AGENT=claude` by default) and initializes data directories.
+
+Check logs:
+
+```bash
+docker compose logs -f
+```
+
+### 3) Access
+
+**Option A: Tailscale (recommended)**
+
+Open:
+
+```text
+http://<tailnet-ip>:3006
+```
+
+Find tailnet IP:
+
+```bash
+docker compose logs | grep 'Tailscale connected'
+# or
+docker exec -u devbox devbox tailscale ip -4
+```
+
+**Option B: Public relay** (auto when `TS_AUTHKEY` is empty)
+
+```bash
+docker compose logs -f
+```
+
+Or open <https://app.hapi.run> and log in with the token from logs.
+
+### 4) First web login
+
+Use the token shown in logs. You can check it later:
+
+```bash
+docker exec -u devbox devbox cat /home/devbox/.hapi/settings.json
+```
+
+### 5) First-time agent auth (once per agent)
+
+```bash
+docker exec -it -u devbox devbox bash
+cd /workspace && claude
+```
+
+---
+
+## Supported agents and config
+
+Set `AGENT` in `.env` (comma-separated, e.g. `AGENT=claude,codex`).
+
+| Agent | Required variables | One-time auth |
+|---|---|---|
+| Claude Code | `ANTHROPIC_BASE_URL` + `ANTHROPIC_API_KEY` | Run `claude` once |
+| Codex | `OPENAI_API_KEY` or `CODEX_BASE_URL` + `CODEX_API_KEY` | `codex login --with-api-key` (or auto via gateway) |
+| OpenCode | `OPENAI_API_KEY` or `OPENCODE_BASE_URL` + `OPENCODE_API_KEY` | Auto / `opencode auth login` |
+| Grok | `XAI_API_KEY` or `GROK_BASE_URL` + `GROK_API_KEY` | Auto |
+| Kimi Code | `KIMI_API_KEY` | Auto |
+| Copilot | GitHub account | `copilot login` |
+| Cursor | Cursor account/subscription | `agent login` |
+| Antigravity | Google account | `agy` |
+| Pi | `PI_BASE_URL` + `PI_API_KEY` | Auto |
+
+---
+
+## Daily usage
+
+- In Web UI: create session, select agent, chat, approve tools, remote takeover.
+- CLI (optional):
+
+```bash
+docker exec -it -u devbox devbox bash
+cd /workspace && hapi
+cd /workspace && hapi codex
+```
+
+After changing `AGENT`, rebuild with `docker compose up -d --build`.
+
+---
+
+## Data persistence
+
+| Host path | Container path | Content |
+|---|---|---|
+| `./data` | `/home/devbox` | Agent auth/config, hapi token/data, install cache |
+| `./tailscale` | `/var/lib/tailscale` | Tailscale state |
+| `./workspace` | `/workspace` | Your code workspace |
+
+---
+
+## Security notes
+
+- Do not commit `.env` (already ignored by `.gitignore`).
+- `devbox` has passwordless sudo by default; remove `/etc/sudoers.d/devbox` if you do not need it.
+- With Tailscale, traffic stays in your private tailnet.
+- Public relay mode still uses encrypted transport.
+- Rotate API keys and hapi token (`cliApiToken`) regularly.
+
+---
+
+## Environment variables (reference)
+
+See `.env.example` and the Chinese section below for complete descriptions.
+
+---
+
+## Related links
+
+- HAPI: <https://github.com/tiann/hapi>
+- Claude Code devcontainer docs: <https://code.claude.com/docs/en/devcontainer>
+- Tailscale Docker docs: <https://tailscale.com/kb/1282/docker>
+
+---
+
+## 中文版
+
 # devbox：手机 / 浏览器远程操作 VPS 上的 AI 编程助手
 
 一个 Docker 镜像，把 **Claude Code、Codex、OpenCode、Grok、Cursor、Kimi、Copilot、Antigravity、Pi** 等 9 个 AI 编程助手装进你的 VPS，让你**在任何地方用手机或浏览器远程操作它们**，全程不需要开放任何公网端口。
