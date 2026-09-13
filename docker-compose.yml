@@ -1,36 +1,56 @@
 # =============================================================================
-# devbox: Claude Code + HAPI + Tailscale
+# devbox: AI agents + selectable control layer (HAPI / MindFS) + Tailscale
+# devbox: AI agent + 可选控制层（HAPI / MindFS）+ Tailscale
 #
+# Before starting, prepare the config:
+#   cp .env.example .env   then edit .env (API endpoint, API key, Tailscale auth key, CONTROL, ...)
+# No manual permission setup on first boot: entrypoint starts as root, auto-creates
+# and chowns the data dirs, then drops privileges.
 # 使用前先准备配置：
-#   cp .env.example .env   然后编辑 .env（API 端点、API Key、Tailscale auth key 等）
+#   cp .env.example .env   然后编辑 .env（API 端点、API Key、Tailscale auth key、CONTROL 等）
 #   首次启动无需手动授权：entrypoint 以 root 引导，自动创建并 chown 数据目录后降权运行
 #
+# The control layer is chosen by CONTROL in .env (mutually exclusive):
+# hapi (default, port 3006) / mindfs (port 7331).
+# 控制层由 .env 里的 CONTROL 选择（互斥）：hapi（默认，端口 3006）/ mindfs（端口 7331）
+#
+# Start:
+#   docker compose up -d --build
+#   docker compose logs -f     # shows the control layer's URL / QR code / token
 # 启动：
 #   docker compose up -d --build
-#   docker compose logs -f     # 查看 HAPI 的 URL / 二维码 / token
+#   docker compose logs -f     # 查看控制层的 URL / 二维码 / token
 # =============================================================================
 services:
   devbox:
     build: .
     image: devbox:latest
     container_name: devbox
-    hostname: ${TS_HOSTNAME:-devbox-vps}          # 与 tailnet 中的主机名保持一致
+    hostname: ${TS_HOSTNAME:-devbox-vps}          # Keep in sync with the tailnet hostname / 与 tailnet 中的主机名保持一致
     restart: unless-stopped
-    env_file: .env                                # 注入 ANTHROPIC_* / TS_* / HAPI_* 等变量
+    env_file: .env                                # Injects ANTHROPIC_* / TS_* / HAPI_* / CONTROL etc. / 注入 ANTHROPIC_* / TS_* / HAPI_* / CONTROL 等变量
     environment:
-      WORKSPACE_ROOT: /workspace                  # runner 允许浏览/新建会话的目录
+      WORKSPACE_ROOT: /workspace                  # Dir the control layer may browse / create sessions in / 控制层允许浏览、新建会话的目录
+      # CONTROL comes from env_file (.env); uncomment below to override ad hoc:
+      # CONTROL 由 env_file(.env) 注入；如需临时覆盖可在下面取消注释：
+      # CONTROL: hapi                             # hapi (default) | mindfs / hapi（默认）| mindfs
     volumes:
-      - ./workspace:/workspace                    # 代码工作区（不设权限，见 README）
-      - ./data:/home/devbox                       # devbox 用户全部数据：认证/配置/会话/agent 二进制(~/.local)
-      - ./tailscale:/var/lib/tailscale            # Tailscale 状态（重启不重新认证）
-    # 可选：在 VPS 本机回环上暴露 HAPI Web UI（http://localhost:3006）
-    # 注意：仅当你需要在 VPS 本地浏览器直接访问时再打开；远程请走 relay/Tailscale
+      - ./workspace:/workspace                    # Code workspace (no permissions set, see README) / 代码工作区（不设权限，见 README）
+      - ./data:/home/devbox                       # All devbox user data: auth/config/sessions/agent binaries (~/.local) / devbox 用户全部数据：认证、配置、会话、agent 二进制(~/.local)
+      - ./tailscale:/var/lib/tailscale            # Tailscale state (no re-auth on restart) / Tailscale 状态（重启不重新认证）
+    # Optional: expose the control-layer Web UI on the VPS loopback (HAPI 3006 / MindFS 7331).
+    # Only enable if you need to browse from a browser on the VPS itself; for remote access use relay/Tailscale.
+    # 可选：在 VPS 本机回环上暴露控制层 Web UI（HAPI 3006 / MindFS 7331）。
+    # 注意：仅当你需要在 VPS 本地浏览器直接访问时再打开；远程请走 relay/Tailscale。
     # ports:
     #   - "127.0.0.1:3006:3006"
+    #   - "127.0.0.1:7331:7331"
     stdin_open: true
     tty: true
     healthcheck:
-      test: ["CMD", "bash", "-c", "(echo > /dev/tcp/127.0.0.1/3006) 2>/dev/null || exit 1"]
+      # Picks the probe port from CONTROL (hapi:3006 / mindfs:7331)
+      # 按 CONTROL 自动选择探测端口（hapi:3006 / mindfs:7331）
+      test: ["CMD", "bash", "/usr/local/bin/healthcheck.sh"]
       interval: 30s
       timeout: 5s
       retries: 3

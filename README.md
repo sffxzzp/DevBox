@@ -5,6 +5,7 @@
 A Docker image that lets you run **9 AI coding assistants** on your VPS (**Claude Code, Codex, OpenCode, Grok, Cursor, Kimi, Copilot, Antigravity, Pi**) and operate them remotely from your **phone or browser** without opening public ports.
 
 - 📱 **Mobile/browser ready**: hapi Web UI (PWA-capable), remote chat, tool-approval, remote session creation
+- 🔀 **Selectable control layer**: `CONTROL=hapi` (default) or `CONTROL=mindfs` — HAPI supports all 9 agents, MindFS supports 7
 - 🔒 **Tailscale direct access (recommended)**: end-to-end encrypted private tunnel
 - 🧩 **Install agents on demand**: no preinstalled CLIs, smaller image size
 - 💾 **Persistent data**: auth, config, and code are stored on host volumes
@@ -112,6 +113,39 @@ Set `AGENT` in `.env` (comma-separated, e.g. `AGENT=claude,codex`).
 | Antigravity | Google account | `agy` |
 | Pi | `PI_BASE_URL` + `PI_API_KEY` | Auto |
 
+> Run login/auth commands as the `devbox` user: `docker exec -it -u devbox devbox bash`, then run them.
+> Codex / OpenCode / Grok / Pi support third-party gateways: set `*_BASE_URL` + `*_API_KEY` and the config is generated at startup, no manual file edits; a manually mounted config file takes precedence (examples in `examples/`).
+
+---
+
+## Control layer: HAPI or MindFS
+
+The image ships two interchangeable control layers. Pick one with `CONTROL` in `.env` — they are mutually exclusive, only one runs:
+
+| | `CONTROL=hapi` (default) | `CONTROL=mindfs` |
+|---|---|---|
+| Service | HAPI hub + runner | MindFS single binary |
+| Port | 3006 | 7331 |
+| Agents | all 9 | 7 (Claude, Codex, OpenCode, Grok, Cursor, Kimi, Copilot) |
+| Remote access | Tailscale, or HAPI public relay (fully automatic) | Tailscale, or a9gent relay (one-time manual pairing) |
+| Extras | Telegram Mini App, seamless local↔remote handoff | Task board, file browser, plugins, session import/sync |
+
+Switch by editing `.env` and recreating the container (no image rebuild needed):
+
+```bash
+# .env
+CONTROL=mindfs
+
+docker compose up -d --force-recreate
+```
+
+**MindFS notes**
+
+- Via Tailscale it works fully automatically, same as HAPI. Without Tailscale, MindFS falls back to the a9gent.com relay, which needs a **one-time manual pairing**: open the local UI (`http://127.0.0.1:7331` on the host, or via Tailscale), click the bind button in the bottom-left corner, and log in to a9gent.com. Unlike HAPI's relay, this cannot be fully automated.
+- MindFS only drives **7 agents**. `Pi` and `Antigravity` are not supported even if installed via `AGENT=`.
+- If you use a third-party gateway (custom `*_BASE_URL`), verify it once under MindFS: Claude/Codex are driven through native SDK paths rather than plain CLI wrapping.
+- Related variables: `MINDFS_LISTEN_PORT` (7331), `MINDFS_NO_RELAYER` (empty = auto), `MINDFS_E2EE` (false).
+
 ---
 
 ## Daily usage
@@ -134,25 +168,82 @@ After changing `AGENT`, recreate the container so the updated `.env` is applied 
 
 | Host path | Container path | Content |
 |---|---|---|
-| `./data` | `/home/devbox` | Agent auth/config, hapi token/data, install cache |
+| `./data` | `/home/devbox` | Agent auth/config, HAPI token/data, MindFS config (`~/.config/mindfs`, `~/.local/share/mindfs`), install cache |
 | `./tailscale` | `/var/lib/tailscale` | Tailscale state |
-| `./workspace` | `/workspace` | Your code workspace |
+| `./workspace` | `/workspace` | Your code workspace (MindFS session data lives in `.mindfs/`) |
+
+---
+
+## FAQ
+
+**Q: The container won't start, or there's a FATAL in the logs?**
+A: The first boot initializes the data dirs and their permissions automatically. If you see "cannot create the config dirs under /home/devbox", you are most likely forcing a non-root start with `--user 1000` or compose's `user:` — remove it and restart; the default path needs no manual steps.
+
+**Q: I don't see the access URL / QR code?**
+A: Wait a few seconds and refresh `docker compose logs -f`; the public relay takes a moment on first connect. Make sure you followed step 3: with `TS_AUTHKEY` set use option A, otherwise option B.
+
+**Q: Downloads are slow / agents fail to install in mainland China?**
+A: Set `NPM_REGISTRY=https://registry.npmmirror.com` in `.env` and restart the container. grok / cursor / kimi / agy use official install scripts and may need a proxy or manual install (logs: `/tmp/install-<agent>.log`).
+
+**Q: Tailscale isn't connecting?**
+A: Run `docker exec -u devbox devbox cat /tmp/tailscale-up.log` to see why; verify `TS_AUTHKEY` is valid and the node is approved in the admin console.
+
+**Q: How do I update an agent?**
+A: Change the matching version variable in `.env` (e.g. `CLAUDE_VERSION=2.x.x`) and run `docker compose up -d --build`; to change versions you must remove the old install first (`docker exec -u devbox devbox bash` then `rm -rf ~/.local/lib/node_modules/<pkg> ~/.local/bin/<cmd>`).
+
+**Q: How do I let an agent install OS packages (apt)?**
+A: The `devbox` user has **passwordless sudo** — ask Claude Code etc. to use `sudo` when installing system dependencies (e.g. `sudo apt-get install -y build-essential`), approve it on your phone, and the agent completes the install itself. Language-level dependencies (npm / pip / venv) need no sudo; install them directly.
+
+Note: packages land in the container's writable layer and are lost on `docker compose down` or a rebuild. For long-lived dependencies, bake them into a derived image (`FROM devbox:latest` then `RUN apt-get install -y ...`).
 
 ---
 
 ## Security notes
 
-- Do not commit `.env` (already ignored by `.gitignore`).
-- `devbox` has passwordless sudo by default; remove `/etc/sudoers.d/devbox` if you do not need it.
-- With Tailscale, traffic stays in your private tailnet.
-- Public relay mode still uses encrypted transport.
-- Rotate API keys and hapi token (`cliApiToken`) regularly.
+- Do not commit `.env` (already ignored by `.gitignore`); secrets live only in the runtime environment and the volumes.
+- `devbox` has passwordless sudo by default (equivalent to root, so agents can install system deps); remove `/etc/sudoers.d/devbox` or use a stricter sudoers rule if you do not need it.
+- With Tailscale, phone↔VPS traffic stays in an end-to-end-encrypted private tunnel, **with no third party involved**; public relay mode still uses encrypted transport.
+- No firewall port needs to be opened on the VPS (3006/7331 are not published by default).
+- Rotate API keys and the hapi token (`cliApiToken` in `/home/devbox/.hapi/settings.json`) regularly.
 
 ---
 
 ## Environment variables (reference)
 
-See `.env.example` and the Chinese section below for complete descriptions.
+All variables are set in `.env`:
+
+| Category | Variable | Default | Description |
+|---|---|---|---|
+| **Control layer** | `CONTROL` | `hapi` | `hapi` or `mindfs` (mutually exclusive) |
+| **Agent install** | `AGENT` | `claude` | Which CLIs to install at startup (comma-separated) |
+| | `NPM_REGISTRY` | `https://registry.npmjs.org` | npm registry; npmmirror recommended in mainland China |
+| | `CLAUDE_VERSION` / `CODEX_VERSION` / `OPENCODE_VERSION` / `COPILOT_VERSION` / `PI_VERSION` | `latest` | Version pinning |
+| **Claude Code** | `ANTHROPIC_BASE_URL` | `https://api.anthropic.com` | API endpoint / gateway |
+| | `ANTHROPIC_API_KEY` | - | Key (x-api-key) |
+| | `ANTHROPIC_AUTH_TOKEN` | - | Alternative Bearer token |
+| **Codex** | `OPENAI_API_KEY` | - | Official key (one-time login) |
+| | `CODEX_BASE_URL` / `CODEX_API_KEY` / `CODEX_MODEL` | - | Third-party gateway; config generated automatically |
+| **OpenCode** | `OPENAI_API_KEY` | - | Standard provider env |
+| | `OPENCODE_BASE_URL` / `OPENCODE_API_KEY` / `OPENCODE_MODEL` | - | Third-party gateway; config generated automatically |
+| **Grok** | `XAI_API_KEY` | - | Official xAI endpoint |
+| | `GROK_BASE_URL` / `GROK_API_KEY` / `GROK_MODEL` | - | Third-party relay; config generated automatically |
+| | `GROK_API_BACKEND` | `chat_completions` | `chat_completions` / `responses` / `messages` |
+| **Kimi** | `KIMI_API_KEY` | - | Moonshot official endpoint |
+| **Pi** | `PI_BASE_URL` / `PI_API_KEY` / `PI_MODEL` | - | Third-party provider (required) |
+| | `PI_API` | `openai-completions` | `openai-completions` / `openai-responses` / `anthropic-messages` / `google-generative-ai` |
+| **HAPI** | `HAPI_NO_RELAY` | auto | Empty = auto (tailnet if Tailscale is up, else public relay); `true` / `false` to force |
+| | `HAPI_LISTEN_HOST` / `HAPI_LISTEN_PORT` | `127.0.0.1` / `3006` | Hub listen address / port |
+| | `HAPI_RELAY_FORCE_TCP` | `false` | Force TCP when the relay's UDP is blocked |
+| | `TELEGRAM_BOT_TOKEN` / `SERVERCHAN_SENDKEY` | - | Optional: permission-approval push notifications |
+| **MindFS** | `MINDFS_LISTEN_PORT` | `7331` | Service port |
+| | `MINDFS_NO_RELAYER` | auto | Empty = auto (tailnet if Tailscale is up, else a9gent relay); `true` / `false` to force |
+| | `MINDFS_E2EE` | `false` | `true` = end-to-end encryption (pairing secret printed on first start) |
+| **Tailscale** | `TS_AUTHKEY` | empty | Empty = Tailscale disabled |
+| | `TS_HOSTNAME` | `devbox-vps` | tailnet node name |
+| | `TS_SSH` | `true` | `true` = enable Tailscale SSH / `false` = disable |
+| | `TS_EXTRA_ARGS` | - | Extra `tailscale up` args |
+
+> Advanced options (e.g. `CORS_ORIGINS`, `HAPI_PUBLIC_URL`) are documented in the [HAPI docs](https://github.com/tiann/hapi/blob/main/docs/guide/installation.md).
 
 ---
 
@@ -171,6 +262,7 @@ See `.env.example` and the Chinese section below for complete descriptions.
 一个 Docker 镜像，把 **Claude Code、Codex、OpenCode、Grok、Cursor、Kimi、Copilot、Antigravity、Pi** 等 9 个 AI 编程助手装进你的 VPS，让你**在任何地方用手机或浏览器远程操作它们**，全程不需要开放任何公网端口。
 
 - 📱 **手机 / 浏览器即用**：hapi Web UI（可加为手机主屏 PWA），远程聊天、审批工具权限、远程新建会话
+- 🔀 **控制层可选**：`CONTROL=hapi`（默认）或 `CONTROL=mindfs`；HAPI 支持全部 9 种 agent，MindFS 支持 7 种
 - 🔒 **Tailscale 直连（推荐）**：端到端加密的私有隧道，流量不经过任何第三方服务器
 - 🧩 **9 种 agent 自由搭配**：镜像里不预装，启动时按需安装，镜像体积小
 - 💾 **数据持久化**：认证、配置、代码都落在宿主机目录，重启 / 重装不丢
@@ -286,6 +378,36 @@ cd /workspace && claude      # 按提示确认使用环境变量中的 key
 
 ---
 
+## 控制层：HAPI 或 MindFS
+
+镜像内置两个可互换的控制层，用 `.env` 里的 `CONTROL` 二选一（互斥，同时只运行一个）：
+
+| | `CONTROL=hapi`（默认） | `CONTROL=mindfs` |
+|---|---|---|
+| 服务 | HAPI hub + runner | MindFS 单二进制 |
+| 端口 | 3006 | 7331 |
+| agent | 全部 9 种 | 7 种（Claude / Codex / OpenCode / Grok / Cursor / Kimi / Copilot） |
+| 远程接入 | Tailscale，或 HAPI 公共中继（全自动） | Tailscale，或 a9gent 中继（首次需手动配对） |
+| 额外能力 | Telegram Mini App、本地↔手机无缝接力 | 任务看板、文件浏览、插件、会话导入/同步 |
+
+改 `.env` 后重建容器即可（无需重新 build）：
+
+```bash
+# .env
+CONTROL=mindfs
+
+docker compose up -d --force-recreate
+```
+
+**MindFS 提示**
+
+- 走 Tailscale 时全自动，与 HAPI 一致。没有 Tailscale 时会回落到 a9gent.com 中继，**首次需手动配对一次**：打开本地 UI（宿主 `http://127.0.0.1:7331`，或经 Tailscale），点左下角绑定按钮登录 a9gent.com 完成绑定。这点和 HAPI 的自动中继不同，无法完全无人值守。
+- MindFS 只驱动 **7 种 agent**；`Pi` 和 `Antigravity` 即便用 `AGENT=` 装了也不会出现。
+- 若使用第三方网关（自配 `*_BASE_URL`），请在 MindFS 下实测一次：Claude / Codex 走的是原生 SDK 路径，而非普通 CLI 包装。
+- 相关变量：`MINDFS_LISTEN_PORT`（7331）、`MINDFS_NO_RELAYER`（留空=自动）、`MINDFS_E2EE`（false）。
+
+---
+
 ## 日常使用
 
 - **手机 / 浏览器**：打开 Web UI（建议"添加到主屏幕"用 PWA），新建会话时选择 agent，聊天、审批权限、远程接管都在这里。
@@ -303,9 +425,9 @@ cd /workspace && claude      # 按提示确认使用环境变量中的 key
 
 | 宿主机目录 | 容器内路径 | 内容 |
 |---|---|---|
-| `./data` | `/home/devbox` | 所有 agent 的认证与配置、hapi 数据与 token、agent 安装缓存 |
+| `./data` | `/home/devbox` | 所有 agent 的认证与配置、HAPI 数据与 token、MindFS 配置（`~/.config/mindfs`、`~/.local/share/mindfs`）、agent 安装缓存 |
 | `./tailscale` | `/var/lib/tailscale` | Tailscale 登录状态（重启不重新认证） |
-| `./workspace` | `/workspace` | 代码工作区（建议用 git 管理） |
+| `./workspace` | `/workspace` | 代码工作区（建议用 git 管理；MindFS 会话数据在 `.mindfs/`） |
 
 ---
 
@@ -349,6 +471,7 @@ A: devbox 用户自带**免密 sudo**——在会话里让 Claude Code 等 agent
 
 | 类别 | 变量 | 默认 | 说明 |
 |------|------|------|------|
+| **控制层** | `CONTROL` | `hapi` | `hapi` 或 `mindfs`（二选一，互斥） |
 | **Agent 安装** | `AGENT` | `claude` | 启动时安装哪些 CLI（逗号分隔） |
 | | `NPM_REGISTRY` | `https://registry.npmjs.org` | npm 镜像，国内建议 npmmirror |
 | | `CLAUDE_VERSION` / `CODEX_VERSION` / `OPENCODE_VERSION` / `COPILOT_VERSION` / `PI_VERSION` | `latest` | 版本锁定 |
@@ -369,6 +492,9 @@ A: devbox 用户自带**免密 sudo**——在会话里让 Claude Code 等 agent
 | | `HAPI_LISTEN_HOST` / `HAPI_LISTEN_PORT` | `127.0.0.1` / `3006` | hub 监听地址 / 端口 |
 | | `HAPI_RELAY_FORCE_TCP` | `false` | 公共中继 UDP 不通时强制 TCP |
 | | `TELEGRAM_BOT_TOKEN` / `SERVERCHAN_SENDKEY` | - | 可选：权限审批推送通知 |
+| **MindFS** | `MINDFS_LISTEN_PORT` | `7331` | 服务端口 |
+| | `MINDFS_NO_RELAYER` | 自动 | 留空=自动（有 Tailscale 走私网、无则允许 a9gent 中继）；`true` / `false` 强制指定 |
+| | `MINDFS_E2EE` | `false` | `true`=启用端到端加密（首次启动打印配对密钥） |
 | **Tailscale** | `TS_AUTHKEY` | 空 | 留空=不启用 Tailscale |
 | | `TS_HOSTNAME` | `devbox-vps` | tailnet 节点名 |
 | | `TS_SSH` | `true` | `true`=启用 Tailscale SSH / `false`=关闭 |
